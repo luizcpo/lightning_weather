@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+/* ---------------------------------------------------------------------------
+ * Google Places Autocomplete (`.pac-container`)
+ *
+ * Google injects this dropdown directly into <body>, so Tailwind utilities
+ * can't reach it. We re-style it here so the suggestions blend with the rest
+ * of the UI.
+ *
+ * `z-index: 9999` is important: the container is positioned absolutely against
+ * the viewport, and stacking contexts created by parent elements (e.g. the
+ * sticky header or any element with `transform`) can otherwise hide it.
+ * `!important` is used because Google sets z-index inline on the container.
+ * ------------------------------------------------------------------------- */
+.pac-container {
+  z-index: 9999 !important;
+  margin-top: 4px;
+  border: 1px solid rgb(226 232 240);   /* slate-200 */
+  border-radius: 14px;
+  box-shadow:
+    0 12px 28px -8px rgb(15 23 42 / 0.18),
+    0 4px 10px -4px rgb(15 23 42 / 0.10);
+  font-family: inherit;
+  padding: 4px;
+  background-color: #ffffff;
+}
+
+.pac-item {
+  padding: 10px 12px;
+  border-top: none;
+  border-radius: 10px;
+  font-size: 0.9rem;
+  line-height: 1.25rem;
+  color: rgb(51 65 85);                 /* slate-700 */
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.pac-item:hover,
+.pac-item-selected {
+  background-color: rgb(238 242 255);   /* indigo-50 */
+  color: rgb(55 48 163);                /* indigo-800 */
+}
+
+.pac-item-query {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: rgb(15 23 42);                 /* slate-900 */
+  padding-right: 4px;
+}
+
+.pac-matched {
+  font-weight: 700;
+  color: rgb(79 70 229);                /* indigo-600 */
+}
+
+.pac-logo::after {
+  margin: 8px;
+  opacity: 0.55;
+}

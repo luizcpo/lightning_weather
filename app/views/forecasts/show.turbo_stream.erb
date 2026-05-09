@@ -1,0 +1,9 @@
+<%= turbo_stream.update "forecast_result" do %>
+  <% if @error.present? %>
+    <%= render "error", message: @error %>
+  <% elsif @forecast.present? %>
+    <%= render "forecast", forecast: @forecast %>
+  <% else %>
+    <%= render "empty_state" %>
+  <% end %>
+<% end %>
