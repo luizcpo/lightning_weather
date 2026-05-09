@@ -22,9 +22,15 @@
         <%= form.text_field :address,
               value: address,
               autocomplete: "off",
+              spellcheck: "false",
               placeholder: "e.g. 1600 Amphitheatre Parkway, Mountain View, CA",
               required: true,
-              data: { places_autocomplete_target: "input" },
+              role: "combobox",
+              aria: { autocomplete: "list", expanded: "false" },
+              data: {
+                places_autocomplete_target: "input",
+                action: "input->places-autocomplete#onInput keydown->places-autocomplete#onKeydown focus->places-autocomplete#onFocus"
+              },
               class: "w-full rounded-xl border-0 bg-slate-50 py-3 pl-11 pr-11 text-base text-slate-900 ring-1 ring-inset ring-slate-200 placeholder:text-slate-400 focus:ring-2 focus:ring-indigo-500 focus:outline-none transition" %>
         <span data-places-autocomplete-target="spinner"
               hidden
@@ -35,10 +41,19 @@
             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8v4a4 4 0 0 0-4 4H4z"></path>
           </svg>
         </span>
+
+        <ul data-places-autocomplete-target="dropdown"
+            hidden
+            role="listbox"
+            class="absolute left-0 right-0 top-full mt-2 z-50 max-h-80 overflow-auto rounded-xl bg-white py-1 shadow-xl shadow-slate-900/10 ring-1 ring-slate-200"></ul>
       </div>
       <p class="text-xs text-slate-500">
-        Autocomplete uses Google Places. Pick a suggestion for the most accurate result.
+        Powered by Google Places. Pick a suggestion for the most accurate result.
       </p>
+      <p data-places-autocomplete-target="error"
+         hidden
+         role="alert"
+         class="text-xs font-medium text-rose-600 bg-rose-50 ring-1 ring-rose-100 rounded-lg px-3 py-2"></p>
     </div>
 
     <div class="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-between gap-3">

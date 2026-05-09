@@ -76,15 +76,16 @@ class ForecastFetcherTest < ActiveSupport::TestCase
     assert_requested :get, %r{api\.open-meteo\.com/v1/forecast}, times: 1
   end
 
-  test "fails clearly when ZIP code cannot be determined" do
+  test "succeeds for city-level queries by falling back to coordinate-based cache" do
     body = {
       "status" => "OK",
       "results" => [
         {
-          "formatted_address" => "Pacific Ocean",
-          "geometry" => { "location" => { "lat" => 0, "lng" => 0 } },
+          "formatted_address" => "Berlin, Germany",
+          "geometry" => { "location" => { "lat" => 52.520008, "lng" => 13.404954 } },
           "address_components" => [
-            { "long_name" => "Earth", "short_name" => "Earth", "types" => ["country"] }
+            { "long_name" => "Berlin", "short_name" => "Berlin", "types" => ["locality"] },
+            { "long_name" => "Germany", "short_name" => "DE", "types" => ["country"] }
           ]
         }
       ]
@@ -93,9 +94,58 @@ class ForecastFetcherTest < ActiveSupport::TestCase
     stub_request(:get, %r{maps\.googleapis\.com/maps/api/geocode/json})
       .to_return(status: 200, body: body, headers: { "Content-Type" => "application/json" })
 
-    result = ForecastFetcher.call(address: "Middle of the ocean")
+    result = ForecastFetcher.call(address: "Berlin")
+
+    assert_predicate result, :success?
+    forecast = result.value
+    assert_equal "Berlin, Germany", forecast.formatted_address
+    assert_nil forecast.zip_code
+    refute forecast.from_cache?
+  end
+
+  test "two city-level queries inside the same ~1km bucket share a cache entry" do
+    body = {
+      "status" => "OK",
+      "results" => [
+        {
+          "formatted_address" => "Berlin, Germany",
+          "geometry" => { "location" => { "lat" => 52.5201, "lng" => 13.4051 } },
+          "address_components" => [
+            { "long_name" => "Berlin", "short_name" => "Berlin", "types" => ["locality"] },
+            { "long_name" => "Germany", "short_name" => "DE", "types" => ["country"] }
+          ]
+        }
+      ]
+    }.to_json
+    stub_request(:get, %r{maps\.googleapis\.com/maps/api/geocode/json})
+      .to_return(status: 200, body: body, headers: { "Content-Type" => "application/json" })
+
+    ForecastFetcher.call(address: "Berlin")
+    second = ForecastFetcher.call(address: "Berlin, Germany")
+
+    assert_predicate second, :success?
+    assert second.value.from_cache?
+    assert_requested :get, %r{api\.open-meteo\.com/v1/forecast}, times: 1
+  end
+
+  test "fails when geocoder returns no usable location at all" do
+    body = {
+      "status" => "OK",
+      "results" => [
+        {
+          "formatted_address" => "Nowhere",
+          "geometry" => { "location" => {} },
+          "address_components" => []
+        }
+      ]
+    }.to_json
+
+    stub_request(:get, %r{maps\.googleapis\.com/maps/api/geocode/json})
+      .to_return(status: 200, body: body, headers: { "Content-Type" => "application/json" })
+
+    result = ForecastFetcher.call(address: "???")
 
     assert_predicate result, :failure?
-    assert_match(/ZIP/i, result.error)
+    assert_match(/coordinates/i, result.error)
   end
 end

@@ -14,7 +14,7 @@ ZIP code** and the UI clearly shows when a result was served from cache.
 - 🗺️ **Server-side geocoding** via the Google Maps Geocoding API to extract the canonical ZIP code.
 - 🌡️ **Current temperature, "feels like", humidity, wind** plus today's high/low.
 - 📅 **7-day outlook** with daily highs, lows and precipitation probability.
-- ⚡ **30-minute Rails cache keyed by ZIP code** — different addresses inside the same ZIP share a cached payload.
+- ⚡ **30-minute Rails cache keyed by ZIP code** — with an automatic fallback to a ~1km coordinate bucket when Google doesn't return a postal code (so city-level queries like "Berlin" still benefit from caching).
 - 🏷️ **Cache indicator** ("Live" / "From cache") rendered on every result.
 - 🎚️ **Imperial / metric toggle** (°F · mph ⇄ °C · km/h), each with its own cache namespace.
 - 🚀 **Hotwire-powered partial updates** via Turbo Frames — no full-page reloads on search.
@@ -117,7 +117,9 @@ ForecastFetcher (orchestrator)
 `ForecastFetcher` is the only service the controller talks to. It:
 
 1. Calls `GeocodingService` to turn the address into a `{ formatted_address, lat, lng, zip_code, … }` hash.
-2. Builds the cache key as `forecasts:<unit_system>:<zip_code>`.
+2. Builds the cache key:
+   - `forecasts:<unit_system>:<zip_code>` when Google returns a postal code (street-level queries).
+   - `forecasts:<unit_system>:geo:<lat>,<lng>` (lat/lng rounded to 2 decimals ≈ 1km grid) when no ZIP is available — this lets city-level queries like "Berlin" or "Tokyo" benefit from the cache too.
 3. Uses `Rails.cache.exist?` *before* `Rails.cache.fetch` to record whether the
    payload was already cached — this is what powers the "From cache" badge.
 4. On a cache miss, calls `WeatherService` and stores the merged payload for
@@ -132,7 +134,7 @@ ForecastFetcher (orchestrator)
 | **Rails 8 + Hotwire + Tailwind CSS** | The user asked for the latest Rails with Hotwire. Tailwind v4 was generated via the official `--css tailwind` flag and gives us a beautiful, utility-driven UI without writing custom CSS. |
 | **Open-Meteo** as weather provider | Free, no API key, well-documented, returns current + daily forecasts in a single call, supports both unit systems via query params. Removes a configuration step compared to OpenWeatherMap. |
 | **Google Maps for both autocomplete & geocoding** | The user explicitly asked for Google Maps. Keeping both client-side (Places autocomplete) and server-side (Geocoding API) reuses a single key and ensures the ZIP we cache by always comes from a canonical source — even if the user just types and hits Enter without picking a suggestion. |
-| **Cache by ZIP, not address** | The requirement is "Cache the forecast details for 30 minutes for all subsequent requests by zip codes." Two different addresses on the same street share a ZIP and therefore the same forecast — caching by ZIP keeps that DRY and matches the spec. |
+| **Cache by ZIP, not address (with coordinate fallback)** | The requirement is "Cache the forecast details for 30 minutes for all subsequent requests by zip codes." Two different addresses on the same street share a ZIP and therefore the same forecast — caching by ZIP keeps that DRY and matches the spec. When Google returns no ZIP (city-only queries), we fall back to a coordinate bucket so the cache still works without forcing the user to be more specific. |
 | **`memory_store` cache** | The user asked for a "simple Rails cache". `:memory_store` is the simplest correct choice for a single-process dev/test setup. Swapping in `:solid_cache_store`, `:redis_cache_store` or `:file_store` for production is a one-line config change. |
 | **`Rails.cache.exist?` + `Rails.cache.fetch`** | Lets us know whether the upcoming `fetch` will be a hit or a miss — the only reliable way to power the "From cache" badge with Rails' standard cache API. |
 | **Service objects with a tiny `Result` struct** | Keeps controllers thin and gives every external integration a uniform `success?` / `failure?` interface. No giant exception ladder, no special exception classes leaking into views. |

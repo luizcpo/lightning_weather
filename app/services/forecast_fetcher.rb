@@ -1,15 +1,21 @@
 # Orchestrates the forecast lookup pipeline:
 #
-#   1. Geocode the user-provided address (or trust client-provided coords).
-#   2. Use the resulting ZIP code as the cache key for the forecast.
+#   1. Geocode the user-provided address.
+#   2. Build a cache key from the ZIP code when Google returns one,
+#      otherwise from the rounded latitude/longitude (so city-level queries
+#      like "Berlin" or "Tokyo" still benefit from caching).
 #   3. On cache miss, fetch the weather forecast from WeatherService.
 #   4. Build a Forecast presenter that knows whether it came from cache.
 #
 # Caching is intentionally keyed by ZIP code (not the raw address) so that
 # different addresses within the same ZIP share a single cached payload.
+# When no ZIP is available we fall back to a coarse "geo bucket" — coordinates
+# rounded to ~1km — so queries that resolve to the same area still share a
+# single cache entry.
 class ForecastFetcher < ApplicationService
   CACHE_TTL = 30.minutes
   CACHE_NAMESPACE = "forecasts".freeze
+  COORD_PRECISION = 2 # ≈1.1km grid
 
   attr_reader :address, :unit_system
 
@@ -23,13 +29,12 @@ class ForecastFetcher < ApplicationService
     return geocode_result if geocode_result.failure?
 
     location = geocode_result.value
-    zip_code = location[:zip_code]
+    cache_key = build_cache_key(location)
+    return Result.failure(missing_location_message) if cache_key.nil?
 
-    return Result.failure(missing_zip_message) if zip_code.blank?
+    served_from_cache = Rails.cache.exist?(cache_key)
 
-    served_from_cache = Rails.cache.exist?(cache_key(zip_code))
-
-    forecast_payload = Rails.cache.fetch(cache_key(zip_code), expires_in: CACHE_TTL) do
+    forecast_payload = Rails.cache.fetch(cache_key, expires_in: CACHE_TTL) do
       weather_result = WeatherService.call(
         latitude: location[:latitude],
         longitude: location[:longitude],
@@ -39,7 +44,7 @@ class ForecastFetcher < ApplicationService
 
       weather_result.value.merge(
         formatted_address: location[:formatted_address],
-        zip_code: zip_code,
+        zip_code: location[:zip_code],
         latitude: location[:latitude],
         longitude: location[:longitude]
       )
@@ -50,8 +55,19 @@ class ForecastFetcher < ApplicationService
 
   private
 
-  def cache_key(zip_code)
-    [CACHE_NAMESPACE, unit_system, zip_code].join(":")
+  def build_cache_key(location)
+    identifier = location[:zip_code].presence || coord_bucket(location)
+    return nil if identifier.blank?
+
+    [CACHE_NAMESPACE, unit_system, identifier].join(":")
+  end
+
+  def coord_bucket(location)
+    lat = location[:latitude]
+    lng = location[:longitude]
+    return nil if lat.nil? || lng.nil?
+
+    "geo:#{lat.round(COORD_PRECISION)},#{lng.round(COORD_PRECISION)}"
   end
 
   def build_forecast(payload, from_cache)
@@ -69,8 +85,7 @@ class ForecastFetcher < ApplicationService
     )
   end
 
-  def missing_zip_message
-    "We couldn't determine a ZIP/postal code for that address. " \
-      "Please pick a more specific suggestion."
+  def missing_location_message
+    "We couldn't determine the coordinates for that address. Please try a different one."
   end
 end
