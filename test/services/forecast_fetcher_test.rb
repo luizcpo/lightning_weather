@@ -8,9 +8,9 @@ class ForecastFetcherTest < ActiveSupport::TestCase
         "formatted_address" => "1600 Amphitheatre Pkwy, Mountain View, CA 94043, USA",
         "geometry" => { "location" => { "lat" => 37.42, "lng" => -122.08 } },
         "address_components" => [
-          { "long_name" => "94043", "short_name" => "94043", "types" => ["postal_code"] },
+          { "long_name" => "94043",         "short_name" => "94043",         "types" => ["postal_code"] },
           { "long_name" => "Mountain View", "short_name" => "Mountain View", "types" => ["locality"] },
-          { "long_name" => "United States", "short_name" => "US", "types" => ["country"] }
+          { "long_name" => "United States", "short_name" => "US",            "types" => ["country"] }
         ]
       }
     ]
@@ -32,7 +32,7 @@ class ForecastFetcherTest < ActiveSupport::TestCase
       "temperature_2m_max" => [75.0],
       "temperature_2m_min" => [55.0],
       "sunrise" => ["2026-05-09T06:00"],
-      "sunset" => ["2026-05-09T20:00"],
+      "sunset"  => ["2026-05-09T20:00"],
       "precipitation_probability_max" => [0]
     }
   }.to_json
@@ -48,12 +48,11 @@ class ForecastFetcherTest < ActiveSupport::TestCase
   end
 
   test "first call hits the network and reports a fresh result" do
-    result = ForecastFetcher.call(address: "1600 Amphitheatre Pkwy")
+    forecast = ForecastFetcher.call(address: "1600 Amphitheatre Pkwy")
 
-    assert_predicate result, :success?
-    forecast = result.value
+    assert_instance_of Forecast, forecast
     assert_equal "94043", forecast.zip_code
-    assert_equal 70.0, forecast.current_temperature
+    assert_equal 70.0,    forecast.current_temperature
     refute forecast.from_cache?
   end
 
@@ -61,9 +60,7 @@ class ForecastFetcherTest < ActiveSupport::TestCase
     ForecastFetcher.call(address: "1600 Amphitheatre Pkwy")
     second = ForecastFetcher.call(address: "1600 Amphitheatre Pkwy")
 
-    assert_predicate second, :success?
-    assert second.value.from_cache?, "Expected the second lookup to be served from cache"
-
+    assert second.from_cache?, "Expected the second lookup to be served from cache"
     assert_requested :get, %r{api\.open-meteo\.com/v1/forecast}, times: 1
   end
 
@@ -71,12 +68,11 @@ class ForecastFetcherTest < ActiveSupport::TestCase
     ForecastFetcher.call(address: "1600 Amphitheatre Pkwy")
     other = ForecastFetcher.call(address: "1601 Different Street")
 
-    assert_predicate other, :success?
-    assert other.value.from_cache?, "Different address with same ZIP should hit the same cache key"
+    assert other.from_cache?, "Different address with same ZIP should hit the same cache key"
     assert_requested :get, %r{api\.open-meteo\.com/v1/forecast}, times: 1
   end
 
-  test "succeeds for city-level queries by falling back to coordinate-based cache" do
+  test "city-level queries succeed by falling back to a coordinate bucket" do
     body = {
       "status" => "OK",
       "results" => [
@@ -84,22 +80,18 @@ class ForecastFetcherTest < ActiveSupport::TestCase
           "formatted_address" => "Berlin, Germany",
           "geometry" => { "location" => { "lat" => 52.520008, "lng" => 13.404954 } },
           "address_components" => [
-            { "long_name" => "Berlin", "short_name" => "Berlin", "types" => ["locality"] },
-            { "long_name" => "Germany", "short_name" => "DE", "types" => ["country"] }
+            { "long_name" => "Berlin", "short_name" => "Berlin", "types" => ["locality"] }
           ]
         }
       ]
     }.to_json
-
     stub_request(:get, %r{maps\.googleapis\.com/maps/api/geocode/json})
       .to_return(status: 200, body: body, headers: { "Content-Type" => "application/json" })
 
-    result = ForecastFetcher.call(address: "Berlin")
+    forecast = ForecastFetcher.call(address: "Berlin")
 
-    assert_predicate result, :success?
-    forecast = result.value
-    assert_equal "Berlin, Germany", forecast.formatted_address
     assert_nil forecast.zip_code
+    assert_equal "Berlin, Germany", forecast.formatted_address
     refute forecast.from_cache?
   end
 
@@ -111,8 +103,7 @@ class ForecastFetcherTest < ActiveSupport::TestCase
           "formatted_address" => "Berlin, Germany",
           "geometry" => { "location" => { "lat" => 52.5201, "lng" => 13.4051 } },
           "address_components" => [
-            { "long_name" => "Berlin", "short_name" => "Berlin", "types" => ["locality"] },
-            { "long_name" => "Germany", "short_name" => "DE", "types" => ["country"] }
+            { "long_name" => "Berlin", "short_name" => "Berlin", "types" => ["locality"] }
           ]
         }
       ]
@@ -123,12 +114,11 @@ class ForecastFetcherTest < ActiveSupport::TestCase
     ForecastFetcher.call(address: "Berlin")
     second = ForecastFetcher.call(address: "Berlin, Germany")
 
-    assert_predicate second, :success?
-    assert second.value.from_cache?
+    assert second.from_cache?
     assert_requested :get, %r{api\.open-meteo\.com/v1/forecast}, times: 1
   end
 
-  test "fails when geocoder returns no usable location at all" do
+  test "raises CoordinatesUnavailableError when geocoder returns no coordinates" do
     body = {
       "status" => "OK",
       "results" => [
@@ -143,9 +133,19 @@ class ForecastFetcherTest < ActiveSupport::TestCase
     stub_request(:get, %r{maps\.googleapis\.com/maps/api/geocode/json})
       .to_return(status: 200, body: body, headers: { "Content-Type" => "application/json" })
 
-    result = ForecastFetcher.call(address: "???")
+    error = assert_raises(ForecastFetcher::CoordinatesUnavailableError) do
+      ForecastFetcher.call(address: "???")
+    end
+    assert_match(/coordinates/i, error.message)
+  end
 
-    assert_predicate result, :failure?
-    assert_match(/coordinates/i, result.error)
+  test "propagates geocoder failures (e.g. AddressNotFound)" do
+    body = { "status" => "ZERO_RESULTS", "results" => [] }.to_json
+    stub_request(:get, %r{maps\.googleapis\.com/maps/api/geocode/json})
+      .to_return(status: 200, body: body, headers: { "Content-Type" => "application/json" })
+
+    assert_raises(GeocodingService::AddressNotFoundError) do
+      ForecastFetcher.call(address: "asdfghjkl")
+    end
   end
 end

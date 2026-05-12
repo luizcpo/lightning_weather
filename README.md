@@ -112,22 +112,44 @@ The application is organised around those three steps:
 
 ```
 ForecastFetcher (orchestrator)
-  ├── GeocodingService  → Google Maps Geocoding API   (address → lat/lng + ZIP)
-  └── WeatherService    → Open-Meteo /v1/forecast     (lat/lng → forecast JSON)
+  ├── GeocodingService  → Google Maps Geocoding API  → Address (model)
+  └── WeatherService    → Open-Meteo /v1/forecast    → raw payload
+                                                          │
+                                                          ▼
+                              Forecast.from_open_meteo(payload, address:, …)
+                                          │
+                                          ▼
+                                    Forecast (model)
 ```
+
+Services are responsible only for I/O. Parsing the external response into a
+domain object lives on the model that owns it:
+
+- `Address.from_google(google_result)` builds an `Address` from a Google
+  Geocoding result.
+- `Forecast.from_open_meteo(payload, address:, …)` builds a `Forecast` from a
+  raw Open-Meteo response plus an `Address`.
+
+Failures are signalled with **typed exceptions** rooted at
+`ApplicationService::Error` (`ConfigurationError`, `ProviderError`,
+`NetworkError`, `NotFoundError`, plus a few specifics like
+`GeocodingService::AddressNotFoundError`). The controller catches them all
+with a single `rescue_from` and renders a friendly error partial.
 
 `ForecastFetcher` is the only service the controller talks to. It:
 
-1. Calls `GeocodingService` to turn the address into a `{ formatted_address, lat, lng, zip_code, … }` hash.
+1. Calls `GeocodingService.call(query)` → `Address`.
 2. Builds the cache key:
-  - `forecasts:<unit_system>:<zip_code>` when Google returns a postal code (street-level queries).
-  - `forecasts:<unit_system>:geo:<lat>,<lng>` (lat/lng rounded to 2 decimals ≈ 1km grid) when no ZIP is available — this lets city-level queries like "Berlin" or "Tokyo" benefit from the cache too.
-3. Uses `Rails.cache.exist?` *before* `Rails.cache.fetch` to record whether the
-  payload was already cached — this is what powers the "From cache" badge.
-4. On a cache miss, calls `WeatherService` and stores the merged payload for
-  `30.minutes`.
-5. Wraps the result in a `Forecast` PORO (an `ActiveModel::Model`) that exposes
-  view-friendly methods like `temperature_unit`, `today`, `from_cache?`.
+  - `forecasts:<unit_system>:<zip_code>` when Google returns a postal code
+    (street-level queries).
+  - `forecasts:<unit_system>:geo:<lat>,<lng>` (lat/lng rounded to 2 decimals ≈ 1km grid)
+    when no ZIP is available — so city-level queries like "Berlin" or
+    "Tokyo" still benefit from the cache.
+3. Uses `Rails.cache.exist?` *before* `Rails.cache.fetch` to record whether
+   the payload was already cached — this is what powers the "From cache" badge.
+4. On a cache miss, calls `WeatherService` and stores the raw payload + the
+   retrieval timestamp for `30.minutes`.
+5. Returns a `Forecast` built by `Forecast.from_open_meteo`.
 
 ### Why these libraries / decisions?
 
@@ -140,8 +162,11 @@ ForecastFetcher (orchestrator)
 | **Cache by ZIP, not address (with coordinate fallback)** | The requirement is "Cache the forecast details for 30 minutes for all subsequent requests by zip codes." Two different addresses on the same street share a ZIP and therefore the same forecast — caching by ZIP keeps that DRY and matches the spec. When Google returns no ZIP (city-only queries), we fall back to a coordinate bucket so the cache still works without forcing the user to be more specific. |
 | `**memory_store` cache**                                 | The user asked for a "simple Rails cache". `:memory_store` is the simplest correct choice for a single-process dev/test setup. Swapping in `:solid_cache_store`, `:redis_cache_store` or `:file_store` for production is a one-line config change.                                                                                                                                                               |
 | `**Rails.cache.exist?` + `Rails.cache.fetch`**           | Lets us know whether the upcoming `fetch` will be a hit or a miss — the only reliable way to power the "From cache" badge with Rails' standard cache API.                                                                                                                                                                                                                                                        |
-| **Service objects with a tiny `Result` struct**          | Keeps controllers thin and gives every external integration a uniform `success?` / `failure?` interface. No giant exception ladder, no special exception classes leaking into views.                                                                                                                                                                                                                             |
-| `**Forecast` as an `ActiveModel` PORO**                  | We don't need persistence, but we want view helpers and a stable presentation API. `ActiveModel::Attributes` gives us coercion + safe `nil` handling for free.                                                                                                                                                                                                                                                   |
+| **Service objects raising typed exceptions**             | Services do one thing — I/O — and signal failure with subclasses of `ApplicationService::Error`. The controller rescues that one base class via `rescue_from` and renders the same friendly error partial regardless of which provider failed.                                                                                                                                                                  |
+| **Parsing logic lives on models, not services**          | `Address.from_google` and `Forecast.from_open_meteo` are factory methods that own the translation from raw provider payloads into domain objects. Services stay focused on the wire, models stay focused on the shape — and anyone (tests, console, jobs) can rebuild a model from a payload without touching a service.                                                                                        |
+| `**Forecast` / `Address` as `ActiveModel` POROs**        | We don't need persistence, but we want attribute coercion, view-friendly methods (`temperature_unit`, `today`, `from_cache?`), and a stable presentation API. `ActiveModel::Attributes` gives us those for free.                                                                                                                                                                                                 |
+| **`HashWithIndifferentAccess` on `current` / `daily`**   | Nested forecast hashes can arrive with string keys (fresh JSON parse) or symbol keys (from cache, tests, etc.). Wrapping them on assignment means views and tests don't have to care which one they're holding.                                                                                                                                                                                                  |
+| **Lucide icons via `rails_icons`**                       | Weather conditions and the empty-state illustration use real SVG files from the [Lucide](https://lucide.dev) library, rendered inline by [`rails_icons`](https://github.com/Rails-Designer/rails_icons). The helper only maps WMO codes → icon names; the actual SVG markup never lives in Ruby code, and every icon inherits color via `currentColor`. No emojis (which render inconsistently across OSes).    |
 | **Faraday + retries**                                    | Single HTTP abstraction with idiomatic JSON parsing, configurable timeouts, and built-in retry on transient network errors.                                                                                                                                                                                                                                                                                      |
 | **Stimulus controller for Places autocomplete**          | Lazy-loads the Google Maps JS only when the input is on the page, reads the API key from a `<meta>` tag injected by the layout, and degrades gracefully (the form still works as a plain text field) if the key isn't configured.                                                                                                                                                                                |
 | **Turbo Frames**                                         | The result block lives inside `<turbo-frame id="forecast_result">`. Submissions update only that frame and push a new history entry, so the search input stays focused and the URL stays shareable.                                                                                                                                                                                                              |
@@ -154,16 +179,17 @@ ForecastFetcher (orchestrator)
 ```
 app/
 ├── controllers/
-│   └── forecasts_controller.rb       # Single show action, returns html or turbo_stream
+│   └── forecasts_controller.rb       # Single show action; rescue_from for service errors
 ├── services/
-│   ├── application_service.rb        # Tiny base class with .call + Result struct
-│   ├── geocoding_service.rb          # Google Maps Geocoding wrapper
-│   ├── weather_service.rb            # Open-Meteo wrapper
-│   └── forecast_fetcher.rb           # Orchestrator + cache layer
+│   ├── application_service.rb        # Base class with .call + typed Error hierarchy
+│   ├── geocoding_service.rb          # Google Maps Geocoding → Address (raises on failure)
+│   ├── weather_service.rb            # Open-Meteo → raw payload (raises on failure)
+│   └── forecast_fetcher.rb           # Orchestrator + cache layer (returns Forecast)
 ├── models/
-│   └── forecast.rb                   # ActiveModel PORO used by the views
+│   ├── address.rb                    # ActiveModel PORO with .from_google factory
+│   └── forecast.rb                   # ActiveModel PORO with .from_open_meteo factory
 ├── helpers/
-│   └── forecasts_helper.rb           # WMO weather code → emoji/label, formatters
+│   └── forecasts_helper.rb           # WMO weather code → inline Lucide SVG, formatters
 ├── views/forecasts/
 │   ├── show.html.erb
 │   ├── show.turbo_stream.erb
@@ -178,6 +204,9 @@ config/
 └── routes.rb                         # `resource :forecast, only: :show` + root
 test/
 ├── controllers/forecasts_controller_test.rb
+├── models/
+│   ├── address_test.rb
+│   └── forecast_test.rb
 └── services/
     ├── forecast_fetcher_test.rb
     ├── geocoding_service_test.rb

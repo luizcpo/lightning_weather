@@ -54,3 +54,5 @@ group :test do
   # Mock HTTP requests in tests
   gem "webmock"
 end
+
+gem "rails_icons", "~> 1.8"

@@ -1,46 +1,81 @@
 module ForecastsHelper
-  # WMO weather codes used by Open-Meteo. We collapse them into a small set of
-  # buckets that map to one emoji + a short description.
+  # Maps every WMO weather code Open-Meteo can return to a Lucide icon name.
+  # The icons themselves live in `app/assets/svg/icons/lucide/outline/` and
+  # are rendered via the `icon` helper from the `rails_icons` gem.
   # Reference: https://open-meteo.com/en/docs (Variable "weather_code").
-  WEATHER_CODE_MAP = {
-    0 => { icon: "☀️", label: "Clear sky" },
-    1 => { icon: "🌤️", label: "Mainly clear" },
-    2 => { icon: "⛅", label: "Partly cloudy" },
-    3 => { icon: "☁️", label: "Overcast" },
-    45 => { icon: "🌫️", label: "Fog" },
-    48 => { icon: "🌫️", label: "Rime fog" },
-    51 => { icon: "🌦️", label: "Light drizzle" },
-    53 => { icon: "🌦️", label: "Drizzle" },
-    55 => { icon: "🌧️", label: "Heavy drizzle" },
-    56 => { icon: "🌧️", label: "Freezing drizzle" },
-    57 => { icon: "🌧️", label: "Freezing drizzle" },
-    61 => { icon: "🌦️", label: "Light rain" },
-    63 => { icon: "🌧️", label: "Rain" },
-    65 => { icon: "🌧️", label: "Heavy rain" },
-    66 => { icon: "🌧️", label: "Freezing rain" },
-    67 => { icon: "🌧️", label: "Freezing rain" },
-    71 => { icon: "🌨️", label: "Light snow" },
-    73 => { icon: "🌨️", label: "Snow" },
-    75 => { icon: "❄️", label: "Heavy snow" },
-    77 => { icon: "❄️", label: "Snow grains" },
-    80 => { icon: "🌦️", label: "Rain showers" },
-    81 => { icon: "🌧️", label: "Rain showers" },
-    82 => { icon: "⛈️", label: "Violent showers" },
-    85 => { icon: "🌨️", label: "Snow showers" },
-    86 => { icon: "❄️", label: "Heavy snow showers" },
-    95 => { icon: "⛈️", label: "Thunderstorm" },
-    96 => { icon: "⛈️", label: "Thunderstorm w/ hail" },
-    99 => { icon: "⛈️", label: "Severe thunderstorm" }
+  WEATHER_ICONS = {
+    0  => "sun",
+    1  => "sun",
+    2  => "cloud-sun",
+    3  => "cloud",
+    45 => "cloud-fog",
+    48 => "cloud-fog",
+    51 => "cloud-drizzle",
+    53 => "cloud-drizzle",
+    55 => "cloud-drizzle",
+    56 => "cloud-drizzle",
+    57 => "cloud-drizzle",
+    61 => "cloud-rain",
+    63 => "cloud-rain",
+    65 => "cloud-rain",
+    66 => "cloud-rain",
+    67 => "cloud-rain",
+    71 => "cloud-snow",
+    73 => "cloud-snow",
+    75 => "cloud-snow",
+    77 => "cloud-snow",
+    80 => "cloud-rain",
+    81 => "cloud-rain",
+    82 => "cloud-rain",
+    85 => "cloud-snow",
+    86 => "cloud-snow",
+    95 => "cloud-lightning",
+    96 => "cloud-lightning",
+    99 => "cloud-lightning"
   }.freeze
 
-  DEFAULT_WEATHER = { icon: "🌡️", label: "Conditions" }.freeze
+  WEATHER_LABELS = {
+    0  => "Clear sky",
+    1  => "Mainly clear",
+    2  => "Partly cloudy",
+    3  => "Overcast",
+    45 => "Fog",
+    48 => "Rime fog",
+    51 => "Light drizzle",
+    53 => "Drizzle",
+    55 => "Heavy drizzle",
+    56 => "Freezing drizzle",
+    57 => "Freezing drizzle",
+    61 => "Light rain",
+    63 => "Rain",
+    65 => "Heavy rain",
+    66 => "Freezing rain",
+    67 => "Freezing rain",
+    71 => "Light snow",
+    73 => "Snow",
+    75 => "Heavy snow",
+    77 => "Snow grains",
+    80 => "Rain showers",
+    81 => "Rain showers",
+    82 => "Violent showers",
+    85 => "Snow showers",
+    86 => "Heavy snow showers",
+    95 => "Thunderstorm",
+    96 => "Thunderstorm with hail",
+    99 => "Severe thunderstorm"
+  }.freeze
 
-  def weather_icon_for(code)
-    WEATHER_CODE_MAP.fetch(code&.to_i, DEFAULT_WEATHER)[:icon]
+  DEFAULT_ICON = "sun".freeze
+  DEFAULT_LABEL = "Conditions".freeze
+
+  def weather_icon(code, **options)
+    name = WEATHER_ICONS.fetch(code&.to_i, DEFAULT_ICON)
+    options[:class] ||= "h-10 w-10"
+    icon(name, **options)
   end
 
-  def weather_label_for(code)
-    WEATHER_CODE_MAP.fetch(code&.to_i, DEFAULT_WEATHER)[:label]
+  def weather_label(code)
+    WEATHER_LABELS.fetch(code&.to_i, DEFAULT_LABEL)
   end
 
   def format_day(date_string, format: :long)
@@ -49,8 +84,8 @@ module ForecastsHelper
     date = Date.parse(date_string)
     case format
     when :short then date.strftime("%a")
-    when :date then date.strftime("%b %-d")
-    else date.strftime("%A, %B %-d")
+    when :date  then date.strftime("%b %-d")
+    else             date.strftime("%A, %B %-d")
     end
   rescue ArgumentError
     ""

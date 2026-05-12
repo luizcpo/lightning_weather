@@ -1,10 +1,11 @@
 require "faraday"
 require "faraday/retry"
 
-# Fetches a weather forecast (current + daily) for given coordinates.
-#
-# Open-Meteo is used because it's free, reliable, and doesn't require an API
-# key. See https://open-meteo.com/en/docs for the schema.
+# Thin HTTP wrapper around Open-Meteo's `/v1/forecast` endpoint.
+# The service is responsible only for I/O: it makes the request, validates
+# the HTTP response and raises a typed error on failure. Translating the
+# JSON payload into a domain object is the responsibility of `Forecast`
+# (see `Forecast.from_open_meteo`).
 class WeatherService < ApplicationService
   OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast".freeze
 
@@ -34,21 +35,17 @@ class WeatherService < ApplicationService
   end
 
   def call
-    return Result.failure("Coordinates are required.") if latitude.blank? || longitude.blank?
+    raise ArgumentError, "Latitude and longitude are required." if latitude.blank? || longitude.blank?
 
     response = http_client.get(OPEN_METEO_URL, query_params)
-
-    unless response.success?
-      return Result.failure("Weather provider returned status #{response.status}.")
-    end
+    raise ProviderError, "Weather provider returned status #{response.status}." unless response.success?
 
     body = response.body.is_a?(Hash) ? response.body : JSON.parse(response.body)
-
-    Result.success(parse_payload(body))
-  rescue Faraday::Error => e
-    Result.failure("Network error while contacting weather provider: #{e.message}.")
+    body.with_indifferent_access
+  rescue Faraday::Error => error
+    raise NetworkError, "Network error while contacting weather provider: #{error.message}"
   rescue JSON::ParserError
-    Result.failure("Invalid response from weather provider.")
+    raise ProviderError, "Weather provider returned an invalid JSON response."
   end
 
   private
@@ -68,42 +65,6 @@ class WeatherService < ApplicationService
 
   def imperial?
     unit_system.to_s == "imperial"
-  end
-
-  def parse_payload(body)
-    current = body["current"] || {}
-    daily = body["daily"] || {}
-
-    {
-      retrieved_at: Time.current,
-      timezone: body["timezone"],
-      unit_system: unit_system,
-      current: {
-        temperature: current["temperature_2m"]&.to_f&.round(1),
-        feels_like: current["apparent_temperature"]&.to_f&.round(1),
-        humidity: current["relative_humidity_2m"]&.to_f&.round,
-        wind_speed: current["wind_speed_10m"]&.to_f&.round(1),
-        weather_code: current["weather_code"]&.to_i,
-        observed_at: current["time"]
-      },
-      daily: build_daily_forecast(daily)
-    }
-  end
-
-  def build_daily_forecast(daily)
-    times = Array(daily["time"])
-
-    times.each_with_index.map do |date_string, index|
-      {
-        date: date_string,
-        weather_code: daily.dig("weather_code", index)&.to_i,
-        temperature_max: daily.dig("temperature_2m_max", index)&.to_f&.round(1),
-        temperature_min: daily.dig("temperature_2m_min", index)&.to_f&.round(1),
-        sunrise: daily.dig("sunrise", index),
-        sunset: daily.dig("sunset", index),
-        precipitation_probability: daily.dig("precipitation_probability_max", index)&.to_i
-      }
-    end
   end
 
   def http_client

@@ -1,88 +1,69 @@
 # Orchestrates the forecast lookup pipeline:
 #
-#   1. Geocode the user-provided address.
-#   2. Build a cache key from the ZIP code when Google returns one,
-#      otherwise from the rounded latitude/longitude (so city-level queries
-#      like "Berlin" or "Tokyo" still benefit from caching).
-#   3. On cache miss, fetch the weather forecast from WeatherService.
-#   4. Build a Forecast presenter that knows whether it came from cache.
+#   1. Geocode the user-provided query into an `Address` model.
+#   2. Build a cache key from the ZIP code when available, otherwise from a
+#      coarse coordinate bucket (~1km) so city-level queries still benefit
+#      from caching.
+#   3. On cache miss, fetch the raw weather payload from `WeatherService`
+#      and store it together with the retrieval timestamp.
+#   4. Return a `Forecast` model assembled by `Forecast.from_open_meteo`.
 #
-# Caching is intentionally keyed by ZIP code (not the raw address) so that
-# different addresses within the same ZIP share a single cached payload.
-# When no ZIP is available we fall back to a coarse "geo bucket" — coordinates
-# rounded to ~1km — so queries that resolve to the same area still share a
-# single cache entry.
+# Failures bubble up as typed exceptions (subclasses of
+# `ApplicationService::Error`) so the controller can rescue them in one place.
 class ForecastFetcher < ApplicationService
+  class CoordinatesUnavailableError < NotFoundError; end
+
   CACHE_TTL = 30.minutes
   CACHE_NAMESPACE = "forecasts".freeze
   COORD_PRECISION = 2 # ≈1.1km grid
 
-  attr_reader :address, :unit_system
+  attr_reader :query, :unit_system
 
   def initialize(address:, unit_system: "imperial")
-    @address = address
+    @query = address
     @unit_system = unit_system.presence_in(%w[imperial metric]) || "imperial"
   end
 
   def call
-    geocode_result = GeocodingService.call(address)
-    return geocode_result if geocode_result.failure?
-
-    location = geocode_result.value
-    cache_key = build_cache_key(location)
-    return Result.failure(missing_location_message) if cache_key.nil?
+    address = GeocodingService.call(query)
+    cache_key = build_cache_key(address)
+    raise CoordinatesUnavailableError, missing_location_message if cache_key.nil?
 
     served_from_cache = Rails.cache.exist?(cache_key)
 
-    forecast_payload = Rails.cache.fetch(cache_key, expires_in: CACHE_TTL) do
-      weather_result = WeatherService.call(
-        latitude: location[:latitude],
-        longitude: location[:longitude],
-        unit_system: unit_system
-      )
-      return weather_result if weather_result.failure?
-
-      weather_result.value.merge(
-        formatted_address: location[:formatted_address],
-        zip_code: location[:zip_code],
-        latitude: location[:latitude],
-        longitude: location[:longitude]
-      )
+    cached_entry = Rails.cache.fetch(cache_key, expires_in: CACHE_TTL) do
+      {
+        payload: WeatherService.call(
+          latitude: address.latitude,
+          longitude: address.longitude,
+          unit_system: unit_system
+        ),
+        retrieved_at: Time.current
+      }
     end
 
-    Result.success(build_forecast(forecast_payload, served_from_cache))
+    Forecast.from_open_meteo(
+      cached_entry[:payload],
+      address: address,
+      unit_system: unit_system,
+      retrieved_at: cached_entry[:retrieved_at],
+      from_cache: served_from_cache
+    )
   end
 
   private
 
-  def build_cache_key(location)
-    identifier = location[:zip_code].presence || coord_bucket(location)
+  def build_cache_key(address)
+    identifier = address&.zip_code.presence || coord_bucket(address)
     return nil if identifier.blank?
 
     [CACHE_NAMESPACE, unit_system, identifier].join(":")
   end
 
-  def coord_bucket(location)
-    lat = location[:latitude]
-    lng = location[:longitude]
-    return nil if lat.nil? || lng.nil?
+  def coord_bucket(address)
+    return nil unless address&.coordinates?
 
-    "geo:#{lat.round(COORD_PRECISION)},#{lng.round(COORD_PRECISION)}"
-  end
-
-  def build_forecast(payload, from_cache)
-    Forecast.new(
-      formatted_address: payload[:formatted_address],
-      zip_code: payload[:zip_code],
-      latitude: payload[:latitude],
-      longitude: payload[:longitude],
-      unit_system: payload[:unit_system] || unit_system,
-      timezone: payload[:timezone],
-      retrieved_at: payload[:retrieved_at],
-      current: payload[:current],
-      daily: payload[:daily],
-      from_cache: from_cache
-    )
+    "geo:#{address.latitude.round(COORD_PRECISION)},#{address.longitude.round(COORD_PRECISION)}"
   end
 
   def missing_location_message

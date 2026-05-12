@@ -1,55 +1,43 @@
 require "test_helper"
 
 class WeatherServiceTest < ActiveSupport::TestCase
-  test "fetches and normalises Open-Meteo response" do
+  test "returns the raw Open-Meteo response as an indifferent hash" do
     body = {
       "timezone" => "America/Los_Angeles",
-      "current" => {
-        "time" => "2026-05-09T18:00",
-        "temperature_2m" => 71.4,
-        "apparent_temperature" => 70.9,
-        "relative_humidity_2m" => 55,
-        "wind_speed_10m" => 8.7,
-        "weather_code" => 2
-      },
-      "daily" => {
-        "time" => ["2026-05-09", "2026-05-10"],
-        "weather_code" => [2, 61],
-        "temperature_2m_max" => [75.1, 68.4],
-        "temperature_2m_min" => [55.2, 51.0],
-        "sunrise" => ["2026-05-09T06:00", "2026-05-10T06:00"],
-        "sunset" => ["2026-05-09T20:00", "2026-05-10T20:00"],
-        "precipitation_probability_max" => [10, 80]
-      }
+      "current" => { "temperature_2m" => 71.4, "weather_code" => 2 },
+      "daily"   => { "time" => ["2026-05-09"] }
     }.to_json
 
     stub_request(:get, %r{api\.open-meteo\.com/v1/forecast})
       .to_return(status: 200, body: body, headers: { "Content-Type" => "application/json" })
 
-    result = WeatherService.call(latitude: 37.42, longitude: -122.08, unit_system: "imperial")
+    payload = WeatherService.call(latitude: 37.42, longitude: -122.08, unit_system: "imperial")
 
-    assert_predicate result, :success?
-    assert_equal "America/Los_Angeles", result.value[:timezone]
-    assert_equal 71.4, result.value[:current][:temperature]
-    assert_equal 2, result.value[:daily].size
-    assert_equal 75.1, result.value[:daily].first[:temperature_max]
-    assert_equal 80, result.value[:daily].last[:precipitation_probability]
+    assert_equal "America/Los_Angeles", payload[:timezone]
+    assert_equal "America/Los_Angeles", payload["timezone"]
+    assert_equal 71.4, payload[:current][:temperature_2m]
   end
 
-  test "returns failure when coordinates are missing" do
-    result = WeatherService.call(latitude: nil, longitude: nil)
-
-    assert_predicate result, :failure?
-    assert_match(/coordinates/i, result.error)
+  test "raises ArgumentError when coordinates are missing" do
+    error = assert_raises(ArgumentError) { WeatherService.call(latitude: nil, longitude: nil) }
+    assert_match(/latitude/i, error.message)
   end
 
-  test "wraps non-200 HTTP responses" do
+  test "raises ProviderError on a non-200 response" do
     stub_request(:get, %r{api\.open-meteo\.com/v1/forecast})
       .to_return(status: 503, body: "")
 
-    result = WeatherService.call(latitude: 1.0, longitude: 1.0)
+    error = assert_raises(ApplicationService::ProviderError) do
+      WeatherService.call(latitude: 1.0, longitude: 1.0)
+    end
+    assert_match(/503/, error.message)
+  end
 
-    assert_predicate result, :failure?
-    assert_match(/503/, result.error)
+  test "raises NetworkError when the request times out" do
+    stub_request(:get, %r{api\.open-meteo\.com/v1/forecast}).to_timeout
+
+    assert_raises(ApplicationService::NetworkError) do
+      WeatherService.call(latitude: 1.0, longitude: 1.0)
+    end
   end
 end

@@ -35,8 +35,8 @@
 
   <div class="grid gap-8 p-6 sm:p-8 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] md:items-center">
     <div class="flex items-center gap-5">
-      <div class="text-7xl leading-none" aria-hidden="true">
-        <%= weather_icon_for(forecast.current_weather_code) %>
+      <div class="inline-flex h-20 w-20 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-50 to-sky-100 text-indigo-600">
+        <%= weather_icon(forecast.current_weather_code, class: "h-12 w-12") %>
       </div>
       <div>
         <div class="flex items-baseline gap-2">
@@ -46,7 +46,7 @@
           <span class="text-2xl text-slate-500"><%= forecast.temperature_unit %></span>
         </div>
         <p class="mt-1 text-lg text-slate-600">
-          <%= weather_label_for(forecast.current_weather_code) %>
+          <%= weather_label(forecast.current_weather_code) %>
         </p>
         <% if forecast.current_feels_like.present? %>
           <p class="text-sm text-slate-500">
@@ -98,8 +98,8 @@
               <%= index.zero? ? "Today" : format_day(day[:date], format: :short) %>
             </p>
             <p class="text-xs text-slate-400 mb-2"><%= format_day(day[:date], format: :date) %></p>
-            <div class="text-3xl" aria-label="<%= weather_label_for(day[:weather_code]) %>">
-              <%= weather_icon_for(day[:weather_code]) %>
+            <div class="flex justify-center text-indigo-500" aria-label="<%= weather_label(day[:weather_code]) %>">
+              <%= weather_icon(day[:weather_code], class: "h-7 w-7") %>
             </div>
             <p class="mt-2 text-sm">
               <span class="font-semibold text-slate-900">
@@ -110,8 +110,9 @@
               </span>
             </p>
             <% if day[:precipitation_probability].present? && day[:precipitation_probability] > 0 %>
-              <p class="mt-1 text-xs text-sky-600">
-                💧 <%= day[:precipitation_probability] %>%
+              <p class="mt-1 text-xs text-sky-600 flex items-center justify-center gap-1">
+                <%= icon "cloud-drizzle", class: "h-3.5 w-3.5" %>
+                <%= day[:precipitation_probability] %>%
               </p>
             <% end %>
           </li>
