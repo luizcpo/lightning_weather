@@ -1,12 +1,13 @@
-require "faraday"
-require "faraday/retry"
-
 # Thin HTTP wrapper around Open-Meteo's `/v1/forecast` endpoint.
 # The service is responsible only for I/O: it makes the request, validates
-# the HTTP response and raises a typed error on failure. Translating the
-# JSON payload into a domain object is the responsibility of `Forecast`
-# (see `Forecast.from_open_meteo`).
+# the HTTP response (via the `HttpClient` concern) and raises a typed error
+# on failure. Translating the JSON payload into a domain object is the
+# responsibility of `Forecast` (see `Forecast.from_open_meteo`).
 class WeatherService < ApplicationService
+  include HttpClient
+
+  provider_name "Open-Meteo"
+
   OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast".freeze
 
   CURRENT_FIELDS = %w[
@@ -28,24 +29,17 @@ class WeatherService < ApplicationService
 
   attr_reader :latitude, :longitude, :unit_system
 
-  def initialize(latitude:, longitude:, unit_system: "imperial")
+  def initialize(latitude:, longitude:, unit_system: "imperial", http_client: nil)
     @latitude = latitude
     @longitude = longitude
     @unit_system = unit_system
+    self.http_client = http_client if http_client
   end
 
   def call
     raise ArgumentError, "Latitude and longitude are required." if latitude.blank? || longitude.blank?
 
-    response = http_client.get(OPEN_METEO_URL, query_params)
-    raise ProviderError, "Weather provider returned status #{response.status}." unless response.success?
-
-    body = response.body.is_a?(Hash) ? response.body : JSON.parse(response.body)
-    body.with_indifferent_access
-  rescue Faraday::Error => error
-    raise NetworkError, "Network error while contacting weather provider: #{error.message}"
-  rescue JSON::ParserError
-    raise ProviderError, "Weather provider returned an invalid JSON response."
+    http_get(OPEN_METEO_URL, query_params)
   end
 
   private
@@ -65,15 +59,5 @@ class WeatherService < ApplicationService
 
   def imperial?
     unit_system.to_s == "imperial"
-  end
-
-  def http_client
-    @http_client ||= Faraday.new do |conn|
-      conn.request :retry, max: 2, interval: 0.2,
-                           exceptions: [Faraday::TimeoutError, Faraday::ConnectionFailed]
-      conn.response :json, content_type: /\bjson$/
-      conn.options.timeout = 5
-      conn.options.open_timeout = 3
-    end
   end
 end

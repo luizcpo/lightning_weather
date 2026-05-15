@@ -8,30 +8,38 @@
 #      and store it together with the retrieval timestamp.
 #   4. Return a `Forecast` model assembled by `Forecast.from_open_meteo`.
 #
+# Cache behavior is provided by the `Cacheable` concern. The backing store
+# defaults to `Rails.cache` but can be injected via the constructor, which
+# makes the orchestrator easy to test in isolation.
+#
 # Failures bubble up as typed exceptions (subclasses of
 # `ApplicationService::Error`) so the controller can rescue them in one place.
 class ForecastFetcher < ApplicationService
+  include Cacheable
+
   class CoordinatesUnavailableError < NotFoundError; end
 
-  CACHE_TTL = 30.minutes
-  CACHE_NAMESPACE = "forecasts".freeze
+  cache_namespace "forecasts"
+  cache_ttl 30.minutes
+
   COORD_PRECISION = 2 # ≈1.1km grid
 
   attr_reader :query, :unit_system
 
-  def initialize(address:, unit_system: "imperial")
+  def initialize(address:, unit_system: "imperial", cache_store: nil)
     @query = address
     @unit_system = unit_system.presence_in(%w[imperial metric]) || "imperial"
+    self.cache_store = cache_store if cache_store
   end
 
   def call
     address = GeocodingService.call(query)
-    cache_key = build_cache_key(address)
-    raise CoordinatesUnavailableError, missing_location_message if cache_key.nil?
+    identifier = location_identifier(address)
+    raise CoordinatesUnavailableError, missing_location_message if identifier.nil?
 
-    served_from_cache = Rails.cache.exist?(cache_key)
+    served_from_cache = cached?(unit_system, identifier)
 
-    cached_entry = Rails.cache.fetch(cache_key, expires_in: CACHE_TTL) do
+    entry = fetch_cached(unit_system, identifier) do
       {
         payload: WeatherService.call(
           latitude: address.latitude,
@@ -43,21 +51,18 @@ class ForecastFetcher < ApplicationService
     end
 
     Forecast.from_open_meteo(
-      cached_entry[:payload],
+      entry[:payload],
       address: address,
       unit_system: unit_system,
-      retrieved_at: cached_entry[:retrieved_at],
+      retrieved_at: entry[:retrieved_at],
       from_cache: served_from_cache
     )
   end
 
   private
 
-  def build_cache_key(address)
-    identifier = address&.zip_code.presence || coord_bucket(address)
-    return nil if identifier.blank?
-
-    [CACHE_NAMESPACE, unit_system, identifier].join(":")
+  def location_identifier(address)
+    address&.zip_code.presence || coord_bucket(address)
   end
 
   def coord_bucket(address)

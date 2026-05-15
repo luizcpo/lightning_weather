@@ -163,6 +163,7 @@ with a single `rescue_from` and renders a friendly error partial.
 | `**memory_store` cache**                                 | The user asked for a "simple Rails cache". `:memory_store` is the simplest correct choice for a single-process dev/test setup. Swapping in `:solid_cache_store`, `:redis_cache_store` or `:file_store` for production is a one-line config change.                                                                                                                                                               |
 | `**Rails.cache.exist?` + `Rails.cache.fetch`**           | Lets us know whether the upcoming `fetch` will be a hit or a miss — the only reliable way to power the "From cache" badge with Rails' standard cache API.                                                                                                                                                                                                                                                        |
 | **Service objects raising typed exceptions**             | Services do one thing — I/O — and signal failure with subclasses of `ApplicationService::Error`. The controller rescues that one base class via `rescue_from` and renders the same friendly error partial regardless of which provider failed.                                                                                                                                                                  |
+| **`HttpClient` and `Cacheable` concerns (with DI)**      | Cross-cutting behavior (Faraday + retries + JSON + typed-error mapping; cache namespacing + TTL) lives in two small `ActiveSupport::Concern` modules. Each concern exposes a writer for its collaborator (`http_client`, `cache_store`) so services accept them in their initializer — defaults stay `Rails.cache` / a configured Faraday, but tests and alternative environments can swap them transparently. |
 | **Parsing logic lives on models, not services**          | `Address.from_google` and `Forecast.from_open_meteo` are factory methods that own the translation from raw provider payloads into domain objects. Services stay focused on the wire, models stay focused on the shape — and anyone (tests, console, jobs) can rebuild a model from a payload without touching a service.                                                                                        |
 | `**Forecast` / `Address` as `ActiveModel` POROs**        | We don't need persistence, but we want attribute coercion, view-friendly methods (`temperature_unit`, `today`, `from_cache?`), and a stable presentation API. `ActiveModel::Attributes` gives us those for free.                                                                                                                                                                                                 |
 | **`HashWithIndifferentAccess` on `current` / `daily`**   | Nested forecast hashes can arrive with string keys (fresh JSON parse) or symbol keys (from cache, tests, etc.). Wrapping them on assignment means views and tests don't have to care which one they're holding.                                                                                                                                                                                                  |
@@ -184,7 +185,10 @@ app/
 │   ├── application_service.rb        # Base class with .call + typed Error hierarchy
 │   ├── geocoding_service.rb          # Google Maps Geocoding → Address (raises on failure)
 │   ├── weather_service.rb            # Open-Meteo → raw payload (raises on failure)
-│   └── forecast_fetcher.rb           # Orchestrator + cache layer (returns Forecast)
+│   ├── forecast_fetcher.rb           # Orchestrator + cache layer (returns Forecast)
+│   └── concerns/
+│       ├── http_client.rb            # Faraday + retries + typed-error mapping (mixin, injectable)
+│       └── cacheable.rb              # `fetch_cached`/`cached?` + injectable cache_store (mixin)
 ├── models/
 │   ├── address.rb                    # ActiveModel PORO with .from_google factory
 │   └── forecast.rb                   # ActiveModel PORO with .from_open_meteo factory
@@ -210,7 +214,10 @@ test/
 └── services/
     ├── forecast_fetcher_test.rb
     ├── geocoding_service_test.rb
-    └── weather_service_test.rb
+    ├── weather_service_test.rb
+    └── concerns/
+        ├── http_client_test.rb
+        └── cacheable_test.rb
 ```
 
 ---

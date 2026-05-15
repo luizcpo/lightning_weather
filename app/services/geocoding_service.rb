@@ -1,7 +1,8 @@
-require "faraday"
-require "faraday/retry"
-
 class GeocodingService < ApplicationService
+  include HttpClient
+
+  provider_name "Google Maps"
+
   class AddressNotFoundError < NotFoundError; end
   class QuotaExceededError < ProviderError; end
   class RequestDeniedError < ProviderError; end
@@ -18,33 +19,22 @@ class GeocodingService < ApplicationService
 
   attr_reader :query
 
-  def initialize(query)
+  def initialize(query, http_client: nil)
     @query = query.to_s.strip
+    self.http_client = http_client if http_client
   end
 
   def call
-    raise ArgumentError,        "Address cannot be blank."                  if query.blank?
-    raise ConfigurationError,   "Google Maps API key is not configured."    if api_key.blank?
+    raise ArgumentError,      "Address cannot be blank."                  if query.blank?
+    raise ConfigurationError, "Google Maps API key is not configured."    if api_key.blank?
 
-    body = request_body
+    body = http_get(GOOGLE_GEOCODE_URL, address: query, key: api_key)
     raise_for_status(body[:status])
 
     Address.from_google(Array(body[:results]).first)
-  rescue Faraday::Error => error
-    raise NetworkError, "Network error while contacting Google Maps: #{error.message}"
-  rescue JSON::ParserError
-    raise ProviderError, "Google Maps returned an invalid JSON response."
   end
 
   private
-
-  def request_body
-    response = http_client.get(GOOGLE_GEOCODE_URL, address: query, key: api_key)
-    raise ProviderError, "Geocoding request failed (status #{response.status})." unless response.success?
-
-    body = response.body.is_a?(Hash) ? response.body : JSON.parse(response.body)
-    body.with_indifferent_access
-  end
 
   def raise_for_status(status)
     return if status == "OK"
@@ -53,16 +43,6 @@ class GeocodingService < ApplicationService
       [ProviderError, "Unexpected response from Google Maps: #{status}."]
     end
     raise exception_class, message
-  end
-
-  def http_client
-    @http_client ||= Faraday.new do |conn|
-      conn.request :retry, max: 2, interval: 0.2,
-                           exceptions: [Faraday::TimeoutError, Faraday::ConnectionFailed]
-      conn.response :json, content_type: /\bjson$/
-      conn.options.timeout = 5
-      conn.options.open_timeout = 3
-    end
   end
 
   def api_key
